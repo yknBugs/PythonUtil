@@ -1,9 +1,10 @@
 import os
+import platform
 import json
 import subprocess
 import re
 
-def is_prefix_matching(str_a: str, str_b: str):
+def is_prefix_matching(str_a: str, str_b: str) -> tuple[bool, str, str]:
     """
     Check if str_a is a prefix of str_b or vice versa.
     Return:
@@ -25,7 +26,7 @@ def is_prefix_matching(str_a: str, str_b: str):
             break
     return False, "", max_prefix
 
-def get_absolute_file_name(file_name: str):
+def get_absolute_file_name(file_name: str) -> str:
     """
     Get the file name without extension
     """
@@ -56,7 +57,60 @@ def parse_cmd_args(cmd_args: list) -> str:
             result += f'{arg} '
     return result[:-1]
 
-def get_video_stream(video_file_path: str, console_feedback: bool = True):
+def is_blacklist_folder(folder_name: str) -> bool:
+    """
+    Prevents accidental deletion of system folders
+    """
+    folder_to_be_checked = os.path.abspath(folder_name).replace('\\', '/')
+    blacklist_exclude_sub = []
+    blacklist_include_sub = []
+    blacklist_contains_word = []
+    if platform.system() == 'Windows':
+        blacklist_exclude_sub = [
+            "C:/"
+        ]
+        blacklist_include_sub = [
+            "C:/Windows",
+            "C:/Program Files",
+            "C:/Program Files (x86)"
+        ]
+        blacklist_contains_word = [
+            "System Volume Information",
+            "$Recycle.Bin",
+            ".git"
+        ]
+    else:
+        blacklist_exclude_sub = [
+            "/"
+        ]
+        blacklist_include_sub = [
+            "/bin",
+            "/sbin",
+            "/lib",
+            "/lib64",
+            "/usr",
+            "/usr/bin",
+            "/usr/sbin",
+            "/etc",
+            "/boot",
+            "/dev",
+            "/proc",
+            "/sys",
+            "/var",
+            "/run"
+        ]
+        blacklist_contains_word = [
+            ".git"
+        ]
+    if folder_to_be_checked in blacklist_exclude_sub:
+        return True
+    if any(folder_to_be_checked.startswith(blacklist_folder) for blacklist_folder in blacklist_include_sub):
+        return True
+    if any(blacklist_word in folder_to_be_checked for blacklist_word in blacklist_contains_word):
+        return True
+    return False
+
+def get_video_stream(video_file_path: str, console_feedback: bool = True) -> dict:
     """
     Get video stream information from a video file, audio file, or even a subtitle file.
     return value is a dictionary with the following structure:
@@ -278,7 +332,22 @@ def merge_video_stream(video_folder_path,
     has_fatal_error = False
 
     # Check the folder
-    if os.path.exists(video_folder_path) == False:
+    if is_blacklist_folder(video_folder_path):
+        result['warning_count'] += 1
+        result['warning_list'].append(f"Blacklisted input folder {video_folder_path}")
+        result['output_log'].append(f"Warning: Blacklisted input folder {video_folder_path}")
+        if console_feedback:
+            print(f"Warning: Blacklisted input folder {video_folder_path}")
+        has_fatal_error = True
+    if is_blacklist_folder(output_folder_path):
+        result['warning_count'] += 1
+        result['warning_list'].append(f"Blacklisted output folder {output_folder_path}")
+        result['output_log'].append(f"Warning: Blacklisted output folder {output_folder_path}")
+        if console_feedback:
+            print(f"Warning: Blacklisted output folder {output_folder_path}")
+        has_fatal_error = True
+
+    if has_fatal_error == False and os.path.exists(video_folder_path) == False:
         result['warning_count'] += 1
         result['warning_list'].append(f"Input folder {video_folder_path} not found")
         result['output_log'].append(f"Warning: Input folder {video_folder_path} not found")
@@ -318,12 +387,29 @@ def merge_video_stream(video_folder_path,
             if console_feedback:
                 print(f"Warning: Output path {output_folder_path} is not a folder")
             has_fatal_error = True
-        if has_fatal_error == False and len(os.listdir(output_folder_path)) > 0:
+        try:
+            if has_fatal_error == False and os.path.abspath(video_folder_path) == os.path.abspath(output_folder_path):
+                result['warning_count'] += 1
+                result['warning_list'].append(f"Input folder and output folder are the same")
+                result['output_log'].append(f"Warning: Input folder and output folder are the same")
+                if console_feedback:
+                    print(f"Warning: Input folder and output folder are the same")
+                has_fatal_error = True
+            elif has_fatal_error == False and len(os.listdir(output_folder_path)) > 0:
+                result['warning_count'] += 1
+                result['warning_list'].append(f"Output folder {output_folder_path} is not empty")
+                result['output_log'].append(f"Warning: Output folder {output_folder_path} is not empty")
+                if console_feedback:
+                    print(f"Warning: Output folder {output_folder_path} is not empty")
+        except Exception as e:
             result['warning_count'] += 1
-            result['warning_list'].append(f"Output folder {output_folder_path} is not empty")
-            result['output_log'].append(f"Warning: Output folder {output_folder_path} is not empty")
+            result['warning_list'].append(f"Cannot open output folder {output_folder_path}: {str(e)}")
+            result['output_log'].append(f"Warning: Cannot open output folder {output_folder_path}: {str(e)}")
+            result['exception'].append(e)
             if console_feedback:
-                print(f"Warning: Output folder {output_folder_path} is not empty")
+                print(f"Warning: Cannot open output folder {output_folder_path}: {str(e)}")
+            has_fatal_error = True
+        
 
     # Get the list of video files
     folder_files = []
@@ -332,18 +418,27 @@ def merge_video_stream(video_folder_path,
     subtitle_files = []
     files_use_counter = []
     if has_fatal_error == False:
-        folder_files = os.listdir(video_folder_path)
-        for file in folder_files:
-            if os.path.isdir(os.path.join(video_folder_path, file)) or file.startswith('.') or file.startswith('Thumbs.db') or file.startswith('desktop.ini'):
-                result['output_log'].append(f"Info: Exclude {os.path.join(video_folder_path, file)} in the input folder")
-                if console_feedback:
-                    print(f"Exclude {file} in the input folder")
-        folder_files = [file for file in folder_files if not os.path.isdir(os.path.join(video_folder_path, file)) and not file.startswith('.') and not file.startswith('Thumbs.db') and not file.startswith('desktop.ini')]
-        
-        video_files = [os.path.join(video_folder_path, video_file) for video_file in folder_files if video_file.endswith('.mp4') or video_file.endswith('.mkv') or video_file.endswith('.rmvb') or video_file.endswith('.flv')]
-        audio_files = [os.path.join(video_folder_path, audio_file) for audio_file in folder_files if audio_file.endswith('.mp3') or audio_file.endswith('.flac') or audio_file.endswith('.wav') or audio_file.endswith('.mka')]
-        subtitle_files = [os.path.join(video_folder_path, subtitle_file) for subtitle_file in folder_files if subtitle_file.endswith('.srt') or subtitle_file.endswith('.ass') or subtitle_file.endswith('.sup')]
-        files_use_counter = [0] * len(folder_files) # Check if the file is never used or used multiple times
+        try:
+            folder_files = os.listdir(video_folder_path)
+            for file in folder_files:
+                if os.path.isdir(os.path.join(video_folder_path, file)) or file.startswith('.') or file.startswith('Thumbs.db') or file.startswith('desktop.ini') or is_blacklist_folder(os.path.join(video_folder_path, file)):
+                    result['output_log'].append(f"Info: Exclude {os.path.join(video_folder_path, file)} in the input folder")
+                    if console_feedback:
+                        print(f"Exclude {file} in the input folder")
+            folder_files = [file for file in folder_files if not os.path.isdir(os.path.join(video_folder_path, file)) and not file.startswith('.') and not file.startswith('Thumbs.db') and not file.startswith('desktop.ini')]
+            
+            video_files = [os.path.join(video_folder_path, video_file) for video_file in folder_files if video_file.endswith('.mp4') or video_file.endswith('.mkv') or video_file.endswith('.rmvb') or video_file.endswith('.flv')]
+            audio_files = [os.path.join(video_folder_path, audio_file) for audio_file in folder_files if audio_file.endswith('.mp3') or audio_file.endswith('.flac') or audio_file.endswith('.wav') or audio_file.endswith('.mka')]
+            subtitle_files = [os.path.join(video_folder_path, subtitle_file) for subtitle_file in folder_files if subtitle_file.endswith('.srt') or subtitle_file.endswith('.ass') or subtitle_file.endswith('.sup')]
+            files_use_counter = [0] * len(folder_files) # Check if the file is never used or used multiple times
+        except Exception as e:
+            result['warning_count'] += 1
+            result['warning_list'].append(f"Cannot read the content of the input folder {video_folder_path}: {str(e)}")
+            result['output_log'].append(f"Warning: Cannot read the content of the input folder {video_folder_path}: {str(e)}")
+            result['exception'].append(e)
+            if console_feedback:
+                print(f"Warning: Cannot read the content of the input folder {video_folder_path}: {str(e)}")
+            has_fatal_error = True
 
     # Executing each task
     task_id = 0
@@ -656,12 +751,22 @@ def merge_video_stream(video_folder_path,
 
         # Check if the output file exists
         if os.path.exists(output_file) and disable_ffmpeg_merge == False:
-            result['warning_count'] += 1
-            result['warning_list'].append(f"Output file {output_file} already exists, will be overwritten")
-            result['output_log'].append(f"Warning: Output file {output_file} already exists, will be overwritten")
-            if console_feedback:
-                print(f"Warning: Output file {os.path.basename(output_file)} already exists, will be overwritten")
-            os.remove(output_file)
+            try:
+                os.remove(output_file)
+                result['warning_count'] += 1
+                result['warning_list'].append(f"Output file {output_file} already exists, will be overwritten")
+                result['output_log'].append(f"Warning: Output file {output_file} already exists, will be overwritten")
+                if console_feedback:
+                    print(f"Warning: Output file {os.path.basename(output_file)} already exists, will be overwritten")
+            except Exception as e:
+                result['task_count'] += 1
+                result['failed_count'] += 1
+                result['output_log'].append(f"Error: Failed to overwrite the existing output file {output_file}: {str(e)}")
+                result['task'].append(task)
+                result['exception'].append(e)
+                if console_feedback:
+                    print(f"Error: Failed to overwrite the existing output file {os.path.basename(output_file)}: {str(e)}")
+                continue
         
         # Execute FFmpeg
         if disable_ffmpeg_merge == True:
@@ -763,23 +868,45 @@ def merge_video_stream(video_folder_path,
     # Check if the log file already exists
     log_file = os.path.join(output_folder_path, 'output.log')
     json_file = os.path.join(output_folder_path, 'output.json')
+    can_save_log_file = True
+    can_save_json_file = True
     if disable_ffmpeg_merge == False and has_fatal_error == False:    
         if save_log_file:
             if os.path.exists(log_file):
-                result['warning_count'] += 1
-                result['warning_list'].append(f"Log file {log_file} already exists, will be overwritten")
-                result['output_log'].append(f"Warning: Log file {log_file} already exists, will be overwritten")
-                if console_feedback:
-                    print(f"Warning: Log file {os.path.basename(log_file)} already exists, will be overwritten")
-                os.remove(log_file)
+                try:
+                    os.remove(log_file)
+                    result['warning_count'] += 1
+                    result['warning_list'].append(f"Log file {log_file} already exists, will be overwritten")
+                    result['output_log'].append(f"Warning: Log file {log_file} already exists, will be overwritten")
+                    if console_feedback:
+                        print(f"Warning: Log file {os.path.basename(log_file)} already exists, will be overwritten")
+                except Exception as e:
+                    result['warning_count'] += 1
+                    result['warning_list'].append(f"Failed to overrite the existing log file {log_file}: {str(e)}")
+                    result['output_log'].append(f"Warning: Failed to overrite the existing log file {log_file}: {str(e)}")
+                    result['exception'].append(e)
+                    if console_feedback:
+                        print(f"Warning: Failed to overrite the existing log file {os.path.basename(log_file)}: {str(e)}")
+                    can_save_log_file = False
+                
         if save_json_file:
             if os.path.exists(json_file):
-                result['warning_count'] += 1
-                result['warning_list'].append(f"JSON file {json_file} already exists, will be overwritten")
-                result['output_log'].append(f"Warning: JSON file {json_file} already exists, will be overwritten")
-                if console_feedback:
-                    print(f"Warning: JSON file {os.path.basename(json_file)} already exists, will be overwritten")
-                os.remove(json_file)
+                try:
+                    os.remove(json_file)
+                    result['warning_count'] += 1
+                    result['warning_list'].append(f"JSON file {json_file} already exists, will be overwritten")
+                    result['output_log'].append(f"Warning: JSON file {json_file} already exists, will be overwritten")
+                    if console_feedback:
+                        print(f"Warning: JSON file {os.path.basename(json_file)} already exists, will be overwritten")
+                except Exception as e:
+                    result['warning_count'] += 1
+                    result['warning_list'].append(f"Failed to overrite the existing JSON file {json_file}: {str(e)}")
+                    result['output_log'].append(f"Warning: Failed to overrite the existing JSON file {json_file}: {str(e)}")
+                    result['exception'].append(e)
+                    if console_feedback:
+                        print(f"Warning: Failed to overrite the existing JSON file {os.path.basename(json_file)}: {str(e)}")
+                    can_save_json_file = False
+                
 
     if task_id == 0 and has_fatal_error == False:
         result['warning_count'] += 1
@@ -794,7 +921,7 @@ def merge_video_stream(video_folder_path,
     # Save the log file
     if disable_ffmpeg_merge == False and has_fatal_error == False:
         try:
-            if save_log_file:
+            if save_log_file and can_save_log_file:
                 with open(log_file, 'w', encoding='utf-8') as f:
                     f.write('\n'.join(result['output_log']))
         except Exception as e:
@@ -802,7 +929,7 @@ def merge_video_stream(video_folder_path,
                 print(f"Error: Failed to save log file: {str(e)}")
 
         try:
-            if save_json_file:
+            if save_json_file and can_save_json_file:
                 with open(json_file, 'w', encoding='utf-8') as f:
                     json.dump(result, f, indent=4)
         except Exception as e:
@@ -844,7 +971,13 @@ def batch_rename(map_function, folder_path, console_feedback=True):
                 print(f"Error: Failed to rename {os.path.basename(folder_path)}: {str(e)}")
         return result
     if os.path.isdir(folder_path):
-        folder_files = os.listdir(folder_path)
+        try:
+            folder_files = os.listdir(folder_path)
+        except Exception as e:
+            result['output_log'].append(f"Error: Cannot read the content of the folder {folder_path}: {str(e)}")
+            if console_feedback:
+                print(f"Error: Cannot read the content of the folder {folder_path}: {str(e)}")
+            return result
         for file in folder_files:
             try:
                 new_file_name = map_function(file)
